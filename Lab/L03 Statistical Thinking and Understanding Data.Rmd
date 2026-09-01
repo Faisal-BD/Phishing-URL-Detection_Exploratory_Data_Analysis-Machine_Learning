@@ -1,0 +1,337 @@
+---
+title: "Statistical Thinking and Understanding Data"
+output:
+  html_notebook:
+    toc: true
+    toc_depth: 3
+---
+
+## Learning Objectives
+
+After completing this lab, students will be able to:
+
+- Import datasets into R
+- Identify variable types
+- Generate summary statistics
+- Calculate mean, median, variance, and standard deviation
+- Convert data types
+
+<img src="https://raw.githubusercontent.com/kshitizrohilla/iris-flower-classification-using-k-nearest-neighbor-algorithm/0144acb08e183f3d433c6c9d52c56d033b6f61f7/media/iris-flower.png" width="800">
+
+## 1. Importing Datasets
+
+**Load a Built-in Dataset**
+
+```{r}
+data(iris)
+
+head(iris)
+```
+**Dataset Dimensions**
+```{r}
+dim(iris)
+```
+
+Output: 
+
+`150 5`
+
+Meaning:
+
+- 150 observations
+- 5 variables
+
+**View Dataset Structure**
+```{r}
+str(iris)
+```
+
+Output:
+
+```r
+'data.frame': 150 obs. of 5 variables:
+$ Sepal.Length: num
+$ Sepal.Width : num
+$ Petal.Length: num
+$ Petal.Width : num
+$ Species     : Factor
+```
+## 2. Identifying Variable Types
+**Display Data Types**
+```{r}
+sapply(iris, class)
+```
+
+Output:
+
+```r
+Sepal.Length    numeric
+Sepal.Width     numeric
+Petal.Length    numeric
+Petal.Width     numeric
+Species         factor
+```
+
+**Understanding Variable Types**
+
+| Variable     | Type                 |
+| ------------ | -------------------- |
+| Sepal.Length | Numeric              |
+| Sepal.Width  | Numeric              |
+| Petal.Length | Numeric              |
+| Petal.Width  | Numeric              |
+| Species      | Categorical (Factor) |
+
+**Count Variable Types**
+```{r}
+table(sapply(iris, class))
+```
+
+## 3. Summary Statistics
+
+**Summary of Entire Dataset**
+```{r}
+summary(iris)
+```
+
+Output includes:
+
+- Min
+- 1st Quartile
+- Median
+- Mean
+- 3rd Quartile
+- Max
+
+**Summary of a Single Variable**
+```{r}
+summary(iris$Sepal.Length)
+```
+
+## 4. Measures of Central Tendency
+**Mean**
+```{r}
+mean(iris$Sepal.Length)
+```
+
+**Median**
+```{r}
+median(iris$Sepal.Length)
+```
+
+
+**Mode (Custom Function)**
+
+```{r}
+get_mode <- function(x)
+{
+  unique_values <- unique(x)
+
+  unique_values[
+    which.max(tabulate(match(x, unique_values)))
+  ]
+}
+
+get_mode(iris$Species)
+```
+
+## 5. Measures of Spread
+**Variance**
+```{r}
+var(iris$Sepal.Length)
+```
+
+**Standard Deviation**
+```{r}
+sd(iris$Sepal.Length)
+```
+
+**Range**
+```{r}
+range(iris$Sepal.Length)
+```
+
+**Interquartile Range (IQR)**
+```{r}
+IQR(iris$Sepal.Length)
+```
+
+## 6. Calculating Statistics for Multiple Variables
+
+**Mean of All Numeric Variables**
+```{r}
+sapply(iris[,1:4], mean)
+```
+
+**Median of All Numeric Variables**
+```{r}
+sapply(iris[,1:4], median)
+```
+
+**Standard Deviation of All Numeric Variables**
+```{r}
+sapply(iris[,1:4], sd)
+```
+
+## 7. Converting Data Types
+Create a sample dataset:
+
+```{r}
+students <- data.frame(
+  ID = c("101","102","103"),
+  Age = c("20","21","22"),
+  CGPA = c("3.50","3.75","3.80")
+)
+
+students
+```
+
+**Check Current Types**
+```{r}
+str(students)
+```
+
+Output:
+
+```r
+ID   : chr
+Age  : chr
+CGPA : chr
+```
+
+**Convert Character to Numeric**
+
+```{r}
+students$Age <- as.numeric(students$Age)
+
+students$CGPA <- as.numeric(students$CGPA)
+```
+
+**Verify Conversion**
+```{r}
+str(students)
+```
+
+Output:
+
+```r
+Age  : num
+CGPA : num
+```
+
+**Convert Character to Factor**
+
+```{r}
+students$ID <- as.factor(students$ID)
+
+str(students)
+```
+
+## 8. Importing Data from CSV
+Create a CSV file named:
+`students.csv`
+
+Contents:
+
+| ID | Name   | CGPA |
+| -- | ------ | ---- |
+| 1  | Rahim  | 3.70 |
+| 2  | Karim  | 3.50 |
+| 3  | Nabila | 3.90 |
+
+
+Read file:
+
+```{r}
+students <- read.csv(
+  "students.csv"
+)
+
+head(students)
+```
+
+## Exercises
+**Exercise 1**
+
+Load the built-in dataset:
+
+`data(mtcars)`
+
+Find:
+
+- Number of rows
+- Number of columns
+- Variable names
+
+**Exercise 2**
+
+For the variable:
+
+`mtcars$mpg`
+
+Calculate:
+
+- Mean
+- Median
+- Variance
+- Standard Deviation
+
+
+**Exercise 3**
+
+Display summary statistics for:
+
+`mtcars`
+
+**Exercise 4**
+
+Create:
+
+`ages <- c("18","20","22","25")`
+
+Convert it to numeric and verify the type.
+
+**Exercise 5**
+
+Import a CSV file and determine:
+
+- Dataset dimensions
+- Variable types
+- Summary statistics
+
+## Important Points
+- When calculating individual descriptive statistics, always remember to include na.rm = TRUE. If your column contains even a single missing value (NA), R will output NA as the result unless you explicitly tell it to ignore missing values.
+
+- If you are  asked to calculate these metrics across different groups (e.g., finding the mean salary split by department). The **dplyr** package handles this beautifully.
+
+**Example:**
+
+```r
+library(dplyr)
+grouped_stats <- my_data_csv %>%
+  group_by(categorical_column) %>%
+  summarise(
+    Group_Mean     = mean(numeric_column, na.rm = TRUE),
+    Group_Median   = median(numeric_column, na.rm = TRUE),
+    Group_Variance = var(numeric_column, na.rm = TRUE),
+    Group_SD       = sd(numeric_column, na.rm = TRUE),
+    Sample_Count   = n() # Counts number of observations per group
+  )
+
+print(grouped_stats)
+```
+
+## Homework
+
+Download any public CSV dataset from Kaggle, UCI Machine Learning Repository, or another source.
+
+Perform the following:
+
+- Import the dataset into R.
+- Display the first 10 rows.
+- Display dataset dimensions.
+- Identify variable types.
+- Generate summary statistics.
+- Calculate the mean, median, variance, and standard deviation for at least one numerical variable.
+- Convert at least one variable to another data type.
+Write a short summary (3–5 sentences) describing the dataset.

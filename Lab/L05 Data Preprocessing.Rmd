@@ -1,0 +1,388 @@
+---
+title: "Data Preprocessing"
+author: "Roll: Clas ROll,ID: AB-XYZXY-CD, Name: Your Full Name"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+  pdf_document:
+    toc: true
+---
+
+# Learning Objectives
+
+After completing this lab, students will be able to:
+
+- Identify and handle missing values
+- Detect and remove duplicate records
+- Identify inconsistent data
+- Detect and handle outliers
+- Perform data wrangling operations
+- Encode categorical variables
+- Normalize and standardize numerical variables
+- Create new features
+- Perform feature selection
+- Apply dimensionality reduction
+- Perform numerosity reduction through sampling
+
+# 1. Install and Load Packages
+
+```{r}
+required_packages <- c(
+  "tidyverse",
+  "janitor",
+  "caret",
+  "FactoMineR",
+  "factoextra"
+)
+
+for(pkg in required_packages) {
+
+  if(!require(pkg, character.only = TRUE)) {
+
+    cat("Installing", pkg, "...\n")
+
+    install.packages(pkg)
+
+    library(pkg, character.only = TRUE)
+
+  } else {
+
+    cat(pkg, "is already installed.\n")
+
+  }
+
+}
+```
+
+# 2. Load Dataset
+```{r}
+titanic <- read.csv("titanic.csv")
+head(titanic)
+str(titanic)
+```
+# Part I: Data Cleaning
+## 3. Missing Values
+**Identify Missing Values**
+
+```{r}
+colSums(is.na(titanic))
+```
+
+**Percentage of Missing Values**
+
+```{r}
+round(
+  colSums(is.na(titanic)) /
+  nrow(titanic) * 100,
+  2
+)
+```
+**Remove Missing Records**
+
+```{r}
+titanic_clean <- na.omit(titanic)
+```
+
+**Impute Missing Age**
+
+```{r}
+titanic$Age[
+  is.na(titanic$Age)
+] <- mean(
+  titanic$Age,
+  na.rm = TRUE
+)
+```
+
+## 4. Duplicate Records
+**Check Duplicates**
+```{r}
+sum(
+  duplicated(titanic)
+)
+```
+
+**Remove Duplicates**
+```{r}
+titanic <- distinct(titanic)
+```
+
+## 5. Inconsistent Data
+**Example**
+```{r}
+unique(
+  titanic$Sex
+)
+```
+
+male
+
+Male
+
+MALE
+
+would be inconsistent.
+
+**Standardize Values**
+```{r}
+titanic$Sex <- tolower(
+  titanic$Sex
+)
+```
+
+## 6. Outlier Detection
+**Boxplot**
+
+```{r}
+boxplot(
+  titanic$Fare,
+  main = "Fare Distribution"
+)
+```
+**IQR Method**
+
+```{r}
+Q1 <- quantile(
+  titanic$Fare,
+  0.25
+)
+
+Q3 <- quantile(
+  titanic$Fare,
+  0.75
+)
+
+IQR_value <- IQR(
+  titanic$Fare
+)
+
+lower <- Q1 - 1.5 * IQR_value
+upper <- Q3 + 1.5 * IQR_value
+
+outliers <- titanic$Fare[
+  titanic$Fare < lower |
+  titanic$Fare > upper
+]
+
+outliers
+```
+# Part II: Data Transformation
+## 7. Data Wrangling
+**Tidy Data Check**
+
+```{r}
+head(titanic)
+```
+
+Discuss:
+
+Variables in columns
+
+Observations in rows
+
+## 8. Filtering
+Passengers older than 30
+```{r}
+titanic %>%
+  filter(Age > 30)
+```
+
+## 9. Sorting
+Highest Fare
+
+```{r}
+titanic %>%
+  arrange(desc(Fare))
+```
+
+## 10. Joins and Merges
+Create a small example:
+```{r}
+passengers <- data.frame(
+  PassengerId = c(1,2,3),
+  Name = c(
+    "John",
+    "Sara",
+    "Tom"
+  )
+)
+
+tickets <- data.frame(
+  PassengerId = c(1,2,3),
+  TicketClass = c(
+    "First",
+    "Second",
+    "Third"
+  )
+)
+
+merge(
+  passengers,
+  tickets,
+  by = "PassengerId"
+)
+```
+
+## 11. Reshaping Data
+```{r}
+scores <- data.frame(
+  Student = c(
+    "Rahim",
+    "Karim"
+  ),
+  Quiz1 = c(80,70),
+  Quiz2 = c(85,75)
+)
+
+scores
+```
+
+Wide → Long
+
+```{r}
+pivot_longer(
+  scores,
+  cols = c(
+    Quiz1,
+    Quiz2
+  ),
+  names_to = "Quiz",
+  values_to = "Marks"
+)
+```
+
+## 12. Encoding Categorical Variables
+**Convert to Factors**
+```{r}
+titanic$Sex <- as.factor(
+  titanic$Sex
+)
+
+titanic$Embarked <- as.factor(
+  titanic$Embarked
+)
+```
+**Numeric Encoding**
+
+```{r}
+titanic$Sex_Code <-
+  as.numeric(
+    titanic$Sex
+  )
+```
+
+## 13. Normalization
+**Min-Max Scaling**
+```{r}
+titanic$Age_Norm <-
+(
+  titanic$Age -
+  min(titanic$Age)
+) /
+(
+  max(titanic$Age) -
+  min(titanic$Age)
+)
+```
+
+## 14. Standardization
+```{r}
+titanic$Age_Std <-
+  scale(
+    titanic$Age
+  )
+```
+
+## 15. Feature Engineering
+Create Family Size
+```{r}
+titanic$FamilySize <-
+  titanic$SibSp +
+  titanic$Parch + 1
+```
+
+Create Child Indicator
+
+```{r}
+titanic$IsChild <-
+  ifelse(
+    titanic$Age < 18,
+    1,
+    0
+  )
+```
+
+# Part III: Data Reduction
+## 16. Feature Selection
+Select Important Variables
+```{r}
+selected_data <-
+  titanic %>%
+  select(
+    Survived,
+    Age,
+    Fare,
+    Sex,
+    Pclass
+  )
+```
+## 17. Dimensionality Reduction (PCA)
+Create Numerical Dataset
+```{r}
+numeric_data <-
+  titanic %>%
+  select_if(is.numeric)
+```
+Run PCA
+
+```{r}
+pca_result <-
+  prcomp(
+    numeric_data,
+    scale. = TRUE
+  )
+```
+
+Summary
+
+```{r}
+summary(
+  pca_result
+)
+```
+PCA Plot
+```{r}
+fviz_pca_ind(
+  pca_result
+)
+```
+
+## 18. Numerosity Reduction
+**Random Sampling**
+
+Original Size
+
+```{r}
+nrow(titanic)
+```
+Take 20% Sample
+
+```{r}
+sample_data <-
+  sample_n(
+    titanic,
+    size =
+      0.2 *
+      nrow(titanic)
+  )
+```
+
+Sample Size
+```{r}
+nrow(sample_data)
+```
+

@@ -1,0 +1,342 @@
+---
+title: "EDA - Visualization"
+output:
+  html_notebook:
+    toc: true
+    toc_depth: 3
+---
+
+## Learning Objectives
+
+After completing this lab, students will be able to:
+
+- Create histograms and boxplots
+- Generate scatterplots using ggplot2
+- Identify outliers visually
+- Perform correlation analysis
+- Prepare a simple EDA report
+
+## 1. Load Required Libraries
+
+
+```{r}
+# Install packages (run once)
+# install.packages("tidyverse")
+# install.packages("corrplot")
+
+library(tidyverse)
+library(corrplot)
+```
+tidyverse is a collection of R packages designed for data science that provides a consistent and user-friendly framework for data import, cleaning, wrangling, visualization, and analysis. It simplifies common data manipulation tasks and promotes the use of tidy data, where each variable is a column, each observation is a row, and each value occupies a single cell.
+
+Some commonly used packages in the tidyverse include:
+
+- readr – Import data
+- dplyr – Data manipulation and wrangling
+- tidyr – Data reshaping and tidy data
+- ggplot2 – Data visualization
+
+## 2. Load Dataset
+We will use the built-in mtcars dataset.
+```{r}
+data(mtcars)
+head(mtcars)
+```
+
+## 3. Understanding the Dataset
+```{r}
+str(mtcars)
+dim(mtcars)
+summary(mtcars)
+```
+
+**Questions**
+
+- How many observations are there?
+- How many variables are there?
+- Which variables are numerical?
+
+## 4. Histogram
+A histogram shows the distribution of a numerical variable.
+
+Example: Miles per Gallon (mpg)
+```{r}
+hist(
+  mtcars$mpg,
+  main = "Distribution of MPG",
+  xlab = "Miles per Gallon",
+  col = "lightblue",
+  border = "black"
+)
+```
+
+**Interpretation**
+
+- Is the distribution symmetric?
+- Is it positively or negatively skewed?
+- Where are most observations concentrated?
+
+### Histogram using ggplot2
+```{r}
+ggplot(
+  mtcars,
+  aes(x = mpg)
+) +
+  geom_histogram(
+    bins = 10,
+    fill = "steelblue",
+    color = "black"
+  ) +
+  labs(
+    title = "Distribution of MPG",
+    x = "MPG",
+    y = "Frequency"
+  )
+```
+
+## 5. Boxplot
+A boxplot summarizes:
+
+- Minimum
+- Q1
+- Median
+- Q3
+- Maximum
+- Outliers
+
+```{r}
+boxplot(
+  mtcars$mpg,
+  main = "Boxplot of MPG",
+  col = "lightgreen"
+)
+```
+
+### Boxplot using ggplot2
+```{r}
+ggplot(
+  mtcars,
+  aes(y = mpg)
+) +
+  geom_boxplot(
+    fill = "orange"
+  ) +
+  labs(
+    title = "Boxplot of MPG"
+  )
+```
+
+
+## 6. Visual Identification of Outliers
+Create a sample dataset with an obvious outlier.
+
+```{r}
+scores <- c(
+  55, 60, 62, 65, 68,
+  70, 72, 75, 78, 80,
+  150
+)
+
+boxplot(
+  scores,
+  main = "Boxplot with Outlier",
+  col = "pink"
+)
+```
+
+**Discussion**
+
+- Which value appears to be an outlier?
+- Why does it appear separately?
+
+### Variation and Distribution Spanned by Boxplots 
+
+```{r}
+# Comparing diamond prices across different cut qualities
+ggplot(mtcars, aes(x = as.factor(cyl), y = mpg, fill = as.factor(cyl))) +
+  geom_boxplot(alpha = 0.7, outlier.color = "#E74C3C", outlier.shape = 16) +
+  scale_fill_brewer(palette = "Blues") +
+  labs(
+    title = "Miles per Gallon Across Cylinders",
+    x = "Cylinders",
+    y = "MPG",
+    fill = "Cylinder Legend"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+### Detecting Outliers Using IQR
+```{r}
+Q1 <- quantile(scores, 0.25)
+
+Q3 <- quantile(scores, 0.75)
+
+IQR_value <- IQR(scores)
+
+lower <- Q1 - 1.5 * IQR_value
+
+upper <- Q3 + 1.5 * IQR_value
+
+scores[
+  scores < lower |
+  scores > upper
+]
+```
+
+## 7. Scatterplots using ggplot2
+Scatterplots help visualize relationships between variables.
+```{r}
+ggplot(
+  mtcars,
+  aes(
+    x = wt,
+    y = mpg
+  )
+) +
+  geom_point(
+    size = 3,
+    color = "blue"
+  ) +
+  labs(
+    title = "Weight vs MPG",
+    x = "Weight",
+    y = "Miles per Gallon"
+  )
+```
+
+
+**Questions**
+
+- Is there a positive or negative relationship?
+- Is the relationship strong or weak?
+
+## 8. Adding a Trend Line
+
+```{r}
+ggplot(
+  mtcars,
+  aes(
+    x = wt,
+    y = mpg
+  )
+) +
+  geom_point(size = 3) +
+  geom_smooth(
+    method = "lm",
+    se = FALSE,
+    color = "red"
+  ) +
+  labs(
+    title = "Weight vs MPG"
+  )
+```
+
+**Interpretation**
+
+Does MPG increase or decrease as weight increases?
+
+## 9. Correlation Analysis
+**Correlation Coefficient**
+
+```{r}
+cor(
+  mtcars$wt,
+  mtcars$mpg
+)
+```
+
+**Interpretation**
+
+| Correlation | Interpretation   |
+| ----------- | ---------------- |
+| +1          | Perfect positive |
+| 0           | No relationship  |
+| -1          | Perfect negative |
+
+
+**Correlation Matrix**
+
+```{r}
+cor_matrix <- cor(mtcars)
+
+cor_matrix
+```
+
+**Visualizing Correlation Matrix**
+
+```{r}
+corrplot(
+  cor_matrix,
+  method = "color",
+  type = "upper"
+)
+```
+
+**Questions**
+
+- Which variables are strongly correlated?
+- Which variables have weak correlations?
+
+## 10. Pairwise Scatterplots
+```{r}
+pairs(
+  mtcars[, 1:5],
+  main = "Pairwise Scatterplots"
+)
+```
+
+## List Key Findings
+
+
+1. The dataset contains 32 observations and 11 variables.
+
+2. MPG ranges from 10.4 to 33.9.
+
+3. The distribution of MPG appears slightly right-skewed.
+
+4. No obvious outliers were found in MPG.
+
+5. Weight and MPG have a strong negative correlation.
+
+6. Heavier cars tend to have lower fuel efficiency.
+
+and more
+
+## Exercises
+### Exercise 1
+Perform EDA on the variable:
+
+`mtcars$hp`
+
+Tasks:
+
+1. Create a histogram.
+2. Create a boxplot.
+3. Identify any outliers.
+4. Calculate summary statistics.
+5. Describe the distribution.
+
+### Exercise 2
+Using the iris dataset: `data(iris)`
+
+Perform the following:
+
+1. Create a histogram of Sepal Length.
+2. Create a boxplot of Petal Length.
+3. Create a scatterplot of Sepal Length vs Petal Length.
+4. Calculate the correlation between Sepal Length and Petal Length.
+5. Write a short EDA report (5–8 bullet points).
+
+## Home work
+
+Choose a public dataset from Kaggle or UCI and prepare a one-page EDA report containing:
+
+- Dataset description
+- Summary statistics
+- Histogram
+- Boxplot
+- Scatterplot
+- Correlation analysis
+- Three key findings
+

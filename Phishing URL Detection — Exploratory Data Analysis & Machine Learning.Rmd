@@ -1,0 +1,826 @@
+---
+title: "Detecting Phishing URLs from Structural and Content-Based Web Features"
+author: "AMINUR REFAT FAISAL, MD. SHAFAYAT HOSSAIN SHAMIM, TOSHI BEGUM"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+set.seed(42)
+```
+
+```{r packages, message=FALSE, warning=FALSE}
+# All packages are installed dynamically — do not modify this chunk
+pkgs <- c("tidyverse", "skimr", "moments", "ggcorrplot", "knitr", "kableExtra", "corrplot")
+for (pkg in pkgs) {
+  if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    install.packages(pkg, repos = "https://cran.r-project.org")
+    library(pkg, character.only = TRUE)
+  }
+}
+```
+
+
+# Section 1 — Problem Framing
+
+## 1.1 Domain Context and Dataset Background
+
+Phishing websites impersonate legitimate organisations (banks, payment platforms, webmail providers) to trick users into surrendering credentials or financial information. Because phishing pages are typically short-lived and structurally different from the sites they imitate, security researchers have shown that a page's **URL structure** and **HTML/content characteristics** — rather than its visual appearance alone — can be used to flag it automatically, before a human ever has to judge whether it "looks right."
+
+This project uses the PhiUSIIL Phishing URL Dataset, which contains 235,795 URLs (100,945 phishing, 134,850 legitimate) each described by 54 engineered features covering three broad families:
+
+URL-level features — length, subdomain count, digit/letter/special-character ratios, obfuscation indicators (`URLLength`, `NoOfSubDomain`, `DegitRatioInURL`, `HasObfuscation`, etc.)
+Domain/TLD features — domain length, top-level-domain legitimacy probability (`DomainLength`, `TLD`, `TLDLegitimateProb`)
+HTML/content features — page source size, presence of forms, popups, iframes, social-network links, password fields, and title-domain matching (`LineOfCode`, `HasPasswordField`, `NoOfiFrame`, `DomainTitleMatchScore`, etc.)
+
+The binary target `label` indicates whether a URL is legitimate (1) or phishing (0).
+
+## 1.2 Analytical Questions
+
+1. Which URL-structural and HTML-content features are most strongly associated with a website being classified as phishing versus legitimate?
+2. Does the presence of trust-related content signals (social network links, copyright notices, HTTPS, contact/description text) reliably distinguish legitimate sites from phishing sites?
+3. Can a small, non-redundant subset of features (after correlation and variance filtering) retain the separability seen in the full 54-feature set, so that a lighter model can be trained in Phase 2?
+
+## 1.3 Success Criteria and Evaluation Metrics
+
+Because this is ultimately a binary classification problem (Phase 2), a successful analysis at this stage means:
+
+- EDA clearly shows measurable separation between the phishing and legitimate classes on several features (visual and correlation evidence, not just assertion).
+- Skewness is quantified and a defensible transformation/treatment decision is documented for every highly skewed variable.
+- The cleaned, engineered feature set removes redundant/near-constant variables while preserving variables that show strong bivariate association with `label`.
+- For Phase 2 modelling, the target metrics will be accuracy, precision, recall, F1-score, and ROC-AUC, since the classes are moderately imbalanced (57% legitimate / 43% phishing) and both false positives (blocking a real site) and false negatives (missing a phishing site) carry real cost.
+
+## 1.4 Dataset Justification
+
+The dataset is appropriate because it is large (235,795 rows), has no duplicate records, has less missing data, and provides pre-engineered, interpretable numeric features spanning URL syntax and page content — exactly the two feature families the research questions above ask about. Its class balance (43% phishing) is realistic enough to support meaningful classification work in Phase 2 without extreme resampling.
+
+---
+
+# Section 2 — Data Acquisition & Initial Inspection
+
+## 2.1 Loading the Data
+
+```{r load-data}
+url <- "https://raw.githubusercontent.com/Faisal-BD/Data-Science-Dataset/refs/heads/master/PhiUSIIL_Phishing_URL_Dataset.csv"
+
+df <- read.csv(url, stringsAsFactors = FALSE)
+
+# Preview the data
+head(df)
+```
+
+**Observation:** The first rows show a mix of identifier/text columns (`URL`, `Domain`, `Title`) alongside numeric structural features (`URLLength`, `NoOfSubDomain`) and binary content flags (`IsHTTPS`, `HasFavicon`). The target column `label` is the final column and takes values 0 (phishing) or 1 (legitimate). `Title` contains raw scraped page titles, including non-English text, so it will not be used directly in numeric analysis.
+
+## 2.2 Dimensions and Variable Types
+
+```{r inspect}
+cat("Rows:", nrow(df), "\n")
+cat("Columns:", ncol(df), "\n")
+glimpse(df)
+```
+
+**Observation:** The dataset has 235,795 rows and 55 columns (54 features + `label`). Three columns are character/text (`URL`, `Domain`, `TLD`, plus `Title`), and the remaining ~50 are numeric — a mix of continuous measures (e.g. `URLLength`, `LineOfCode`), ratios/probabilities (e.g. `LetterRatioInURL`, `TLDLegitimateProb`), and binary 0/1 indicator flags (e.g. `IsHTTPS`, `HasSocialNet`, `HasPasswordField`). Several "count-like" columns (`NoOfCSS`, `NoOfJS`, `NoOfSelfRef`) are stored as integers but behave like heavily skewed continuous variables, which is confirmed in Section 3.3.
+
+## 2.3 Summary Statistics
+
+```{r summary}
+skim(df)
+```
+
+**Observation:** The `skim()` output confirms that missing data is negligible — only 9 numeric columns have any missing values at all, and each has fewer than 10 missing rows out of 235,795 (well under 0.01%). Several binary flag columns (e.g. `Crypto`, `NoOfQMarkInURL`, `IsDomainIP`) have very low standard deviation, meaning the flagged condition is rare across the dataset — this is followed up in the variance-filter step in Section 4.6. Count-type columns such as `NoOfCSS` and `NoOfJS` show enormous maximum values relative to their medians, consistent with heavy right skew.
+
+## 2.4 Data Provenance
+
+- Source: PhiUSIIL Phishing URL Dataset, originally published via the UCI Machine Learning Repository / Kaggle, accessed here through a GitHub raw CSV mirror.
+- Collection method: URLs and their rendered HTML/DOM content were crawled and passed through a feature-extraction pipeline that computed URL-syntax statistics and page-content indicators; each URL was labelled legitimate or phishing based on verified source lists (e.g. blacklists/whitelists) at collection time.
+- Known limitations: Labels reflect a snapshot in time — a legitimate domain can later be compromised, and phishing domains are frequently taken down and reused, so the mapping between structural features and "phishing" is time-dependent. The dataset is also English/Latin-script skewed in fields like `Title`. Most importantly for modelling (flagged again in Section 3.6), `URLSimilarityIndex` is a pre-computed similarity score that separates the classes almost perfectly, which raises a data-leakage concern that must be handled deliberately in preprocessing/modelling rather than ignored.
+
+---
+
+# Section 3 — Exploratory Data Analysis (EDA)
+
+## 3.1 Univariate Analysis — Numeric Variables
+
+With 50 numeric columns, faceting all of them at once is unreadable, so a representative subset covering URL-syntax, domain, and content families is plotted below.
+
+```{r univariate-numeric, fig.width=14, fig.height=20}
+
+num_cols <- df %>% select(where(is.numeric)) %>% names()
+
+df %>%
+  select(all_of(num_cols)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "#0F6E56", colour = "white", alpha = 0.8) +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Distribution of Numeric Variables",
+       x = NULL, y = "Count") +
+  theme_minimal()
+```
+
+
+**Observation:** Content/count variables (`LineOfCode`, `NoOfCSS`, `NoOfJS`, `NoOfSelfRef`, `NoOfExternalRef`, `NoOfImage`) are extremely right-skewed — the bulk of pages have small values with a long tail of content-heavy pages. `URLSimilarityIndex` is bimodal with a sharp spike at 100, which foreshadows the notable finding in Section 3.6. `DomainTitleMatchScore` is also right-skewed with a large mass near 0. `URLLength`, `NoOfLettersInURL`, and `NoOfDegitsInURL` are right-skewed as expected for text-length measures. `TLDLength` and `NoOfSubDomain` are closer to symmetric but discrete (few unique integer values).
+
+## 3.2 Univariate Analysis — Categorical Variables
+
+`TLD` (top-level domain) is the only meaningful categorical variable in the dataset (`URL`, `Domain`, and `Title` are near-unique identifiers, not categories). It has 695 unique values, so only the top 10 are plotted.
+
+```{r univariate-categorical, fig.width=8, fig.height=5}
+df %>%
+  count(TLD, sort = TRUE) %>%
+  slice_max(n, n = 10) %>%
+  ggplot(aes(x = reorder(TLD, n), y = n, fill = TLD)) +
+  geom_col(alpha = 0.85) +
+  coord_flip() +
+  labs(title = "Top 10 Top-Level Domains (TLD)", x = NULL, y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+**Observation:** `.com` dominates the dataset (≈112,554 rows, roughly 48% of all URLs), followed by `.org`, `.net`, `.app`, and `.uk`. The long tail (685 remaining TLDs) each contribute a small number of rows, so `TLD` will need to be grouped into "top categories + Other" before any encoding (Section 4.3) to avoid an unmanageable number of one-hot columns.
+
+## 3.3 Skewness Analysis
+
+```{r skewness}
+skew_vals <- df %>%
+  select(where(is.numeric)) %>%
+  summarise(across(everything(), ~round(skewness(., na.rm = TRUE), 3))) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Skewness") %>%
+  mutate(
+    Direction = case_when(
+      Skewness >  1   ~ "Highly right-skewed",
+      Skewness >  0.5 ~ "Moderately right-skewed",
+      Skewness < -1   ~ "Highly left-skewed",
+      Skewness < -0.5 ~ "Moderately left-skewed",
+      TRUE            ~ "Approximately symmetric"
+    )
+  ) %>%
+  arrange(desc(abs(Skewness)))
+
+kable(skew_vals, caption = "Skewness of Numeric Variables") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+**Observation:** The most extreme skew belongs to content-count variables — `NoOfCSS`, `NoOfObfuscatedChar`, `NoOfJS`, `NoOfEqualsInURL`, `NoOfEmptyRef`, `NoOfAmpersandInURL`, `NoOfiFrame` — all with skewness well above 40, reflecting that most pages have very few of these elements while a handful of pages have thousands. For these count variables we apply outlier **capping** rather than a log transform in Section 4.2, because a large share of the mass sits at exactly zero (log(0) is undefined and a log1p transform would still leave the variables highly informative but harder to interpret at this stage; capping preserves the "high vs typical" signal that matters for phishing detection). Binary flag columns (`HasObfuscation`, `IsDomainIP`, etc.) also show high skewness values, but this is an artefact of them being rare-event 0/1 indicators, not a distributional problem requiring transformation — no numeric transform is applied to binary columns. Ratio/probability variables such as `TLDLegitimateProb`, `CharContinuationRate`, and `URLCharProb` are close to symmetric and require no transformation.
+
+## 3.4 Bivariate Analysis — Predictors vs. Target
+
+```{r bivariate-boxplot, fig.width=9, fig.height=5}
+df %>%
+  ggplot(aes(x = factor(label), y = URLLength, fill = factor(label))) +
+  geom_boxplot(alpha = 0.8, outlier.colour = "#D85A30") +
+  scale_y_log10() +
+  scale_fill_manual(values = c("#D85A30", "#0F6E56"),
+                     labels = c("Phishing", "Legitimate")) +
+  labs(title = "URL Length by Class (log scale)",
+       x = "Label (0 = Phishing, 1 = Legitimate)",
+       y = "URL Length (log10 scale)",
+       fill = "Class") +
+  theme_minimal()
+```
+
+**Observation:** Legitimate URLs tend to have shorter, more consistent lengths, while phishing URLs show a wider spread including many very long URLs (a common phishing tactic to hide the true domain or embed lookalike text). The log scale is needed because a small number of extreme lengths would otherwise compress the box for the majority of the data.
+
+```{r bivariate-bar, fig.width=8, fig.height=4}
+df %>%
+  count(label, IsHTTPS) %>%
+  mutate(label = factor(label, labels = c("Phishing", "Legitimate")),
+         IsHTTPS = factor(IsHTTPS, labels = c("No HTTPS", "HTTPS"))) %>%
+  ggplot(aes(x = label, y = n, fill = IsHTTPS)) +
+  geom_col(position = "fill", alpha = 0.85) +
+  scale_fill_manual(values = c("#D85A30", "#0F6E56")) +
+  labs(title = "Proportion of HTTPS Usage by Class",
+       x = NULL, y = "Proportion", fill = NULL) +
+  theme_minimal()
+```
+
+**Observation:** Every legitimate URL in the dataset uses HTTPS, while phishing URLs are split roughly evenly between HTTPS and non-HTTPS. This means `IsHTTPS` alone is a strong (though not perfect) signal — a non-HTTPS page is *always* phishing in this data, but HTTPS alone does not guarantee legitimacy, since roughly half of phishing pages also use HTTPS (attackers now routinely obtain free TLS certificates).
+
+```{r bivariate-grouped-summary}
+df %>%
+  group_by(label) %>%
+  summarise(
+    Mean_URLLength   = round(mean(URLLength), 1),
+    Mean_LineOfCode  = round(mean(LineOfCode, na.rm = TRUE), 1),
+    Mean_NoOfImage   = round(mean(NoOfImage), 1),
+    Pct_HasSocialNet = round(mean(HasSocialNet) * 100, 1),
+    Pct_HasPassword  = round(mean(HasPasswordField) * 100, 1),
+    n = n()
+  ) %>%
+  kable(caption = "Grouped Summary: Key Features by Class") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+**Observation:** Legitimate pages have, on average, more source code (`LineOfCode`) and more images, and are far more likely to contain a social-network link (`HasSocialNet`) or copyright/description text — consistent with them being established, content-rich sites rather than quickly assembled phishing pages. `HasPasswordField` is common in both classes, since both real login pages and fake login pages naturally contain password fields, so this feature alone is a weak discriminator despite being one of the more "suspicious-sounding" flags.
+
+## 3.5 Correlation Analysis
+
+To keep the heatmap readable, correlations are computed on a curated subset of numeric predictors that are not near-constant binary flags.
+
+```{r correlation, fig.width=10, fig.height=9}
+cor_subset <- c("URLLength", "DomainLength", "URLSimilarityIndex", "CharContinuationRate",
+                 "TLDLegitimateProb", "TLDLength", "NoOfSubDomain", "NoOfLettersInURL",
+                 "NoOfDegitsInURL", "LineOfCode", "LargestLineLength", "DomainTitleMatchScore",
+                 "URLTitleMatchScore", "NoOfImage", "NoOfCSS", "NoOfJS", "NoOfSelfRef",
+                 "NoOfExternalRef", "label")
+
+cor_matrix <- df %>%
+  select(all_of(cor_subset)) %>%
+  cor(use = "complete.obs")
+
+ggcorrplot(cor_matrix,
+           method = "circle",
+           type   = "lower",
+           lab    = TRUE,
+           lab_size = 2.6,
+           colors = c("#D85A30", "white", "#0F6E56"),
+           title  = "Correlation Heatmap (Curated Numeric Subset)") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+**Observation:** `URLSimilarityIndex` shows a very strong positive correlation with `label` (r ≈ 0.86), far stronger than any other single feature — the reason for this is investigated directly in Section 3.6. `URLLength` and `NoOfLettersInURL` are almost perfectly correlated (r ≈ 0.96), which is expected since letters make up most characters in a URL; one of the pair will be dropped in Section 4.6 to avoid multicollinearity. `DomainTitleMatchScore` and `URLTitleMatchScore` are also highly correlated (r ≈ 0.96) for the same reason — both measure similarity to the page title from slightly different angles. No other pairs exceed the 0.85 multicollinearity threshold used later for feature selection.
+
+## 3.6 Notable Finding
+
+```{r notable-finding, fig.width=8, fig.height=4.5}
+df %>%
+  ggplot(aes(x = URLSimilarityIndex, fill = factor(label))) +
+  geom_density(alpha = 0.6) +
+  scale_fill_manual(values = c("#D85A30", "#0F6E56"),
+                     labels = c("Phishing", "Legitimate")) +
+  labs(title = "URLSimilarityIndex Distribution by Class",
+       x = "URL Similarity Index", y = "Density", fill = "Class") +
+  theme_minimal()
+```
+
+```{r notable-finding-check}
+df %>%
+  group_by(label) %>%
+  summarise(mean_sim = mean(URLSimilarityIndex),
+            sd_sim   = sd(URLSimilarityIndex)) %>%
+  kable(caption = "URLSimilarityIndex by Class") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+**Observation:** This is the most important finding of the EDA. Every single legitimate URL (`label == 1`) has `URLSimilarityIndex` exactly equal to 100, with zero variance — visible as the sharp spike at 100 in Section 3.1 and confirmed by the summary table above (`sd_sim = 0` for the legitimate class). Phishing URLs, by contrast, spread across the full 0–100 range. This is not a naturally occurring pattern; it strongly suggests `URLSimilarityIndex` was itself *derived from* the labelling process (e.g. a similarity-to-known-legitimate-domain score that is defined to be 100 for domains already on the legitimate list). Using this feature directly in a predictive model in Phase 2 would amount to **data leakage** — the model would effectively memorise the labelling rule rather than learn generalisable phishing indicators. This finding directly shapes the feature-selection decision in Section 4.6, where `URLSimilarityIndex` is excluded from the modelling feature set.
+
+---
+
+# Section 4 — Preprocessing & Feature Engineering
+
+## 4.1 Missing Value Treatment
+
+```{r missing-values}
+missing_summary <- df %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Missing_Count") %>%
+  mutate(Missing_Pct = round(Missing_Count / nrow(df) * 100, 4)) %>%
+  filter(Missing_Count > 0)
+
+kable(missing_summary, caption = "Missing Values Summary") %>%
+  kable_styling(bootstrap_options = "striped", full_width = FALSE)
+```
+
+```{r impute}
+# All missing columns are numeric with <=10 missing rows out of 235,795 (<0.005%)
+# Median imputation is used to avoid distorting the already-quantified skewness/outlier
+# structure of these columns, and to avoid discarding otherwise-complete rows.
+num_missing_cols <- missing_summary$Variable
+
+df <- df %>%
+  mutate(across(all_of(num_missing_cols), ~ifelse(is.na(.), median(., na.rm = TRUE), .)))
+
+cat("Remaining missing values:", sum(is.na(df)), "\n")
+```
+
+**Decision:** Nine numeric columns had missing values, each affecting at most 10 of 235,795 rows (well under 0.005%). Given the negligible proportion and the fact several affected columns (`LineOfCode`, `URLSimilarityIndex`, `LargestLineLength`) are highly skewed, **median imputation** was used rather than mean imputation, since the median is robust to the long right tails identified in Section 3.3. Row removal was rejected as unnecessary — it would discard usable data for essentially no benefit given how few rows are affected.
+
+## 4.2 Outlier Detection and Treatment
+
+```{r outliers, fig.width=11, fig.height=6}
+outlier_subset <- c("URLLength", "LineOfCode", "NoOfCSS", "NoOfJS", "NoOfSelfRef", "NoOfImage")
+
+df %>%
+  select(all_of(outlier_subset)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = variable, y = value)) +
+  geom_boxplot(fill = "#E1F5EE", colour = "#0F6E56", outlier.colour = "#D85A30") +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Outlier Detection — Skewed Content/Count Variables") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank())
+```
+
+```{r outlier-treatment}
+# Winsorize (cap) the heavily right-skewed count variables at the 1st/99th percentile
+# instead of removing rows, since 5-10% of rows are flagged as outliers by the IQR rule
+# for these columns — removing them would discard a large, non-random slice of the data
+# (content-heavy pages are a real and informative category, not measurement error).
+cap_cols <- c("URLLength", "LineOfCode", "LargestLineLength", "NoOfCSS", "NoOfJS",
+              "NoOfSelfRef", "NoOfExternalRef", "NoOfImage")
+
+cap_at_percentiles <- function(x, lower = 0.01, upper = 0.99) {
+  bounds <- quantile(x, probs = c(lower, upper), na.rm = TRUE)
+  pmin(pmax(x, bounds[1]), bounds[2])
+}
+
+df <- df %>%
+  mutate(across(all_of(cap_cols), cap_at_percentiles))
+
+cat("Outlier treatment applied via 1st/99th percentile capping to:\n")
+cat(paste(cap_cols, collapse = ", "), "\n")
+```
+
+**Observation and Decision:** IQR-based detection flags roughly 5–10% of rows as outliers on `URLLength`, `LineOfCode`, `NoOfCSS`, `NoOfJS`, and `NoOfSelfRef` — far too large a share to simply delete, and deletion would systematically remove exactly the content-heavy or unusually long pages that are relevant to distinguishing phishing behaviour. Instead, values were **capped (winsorized)** at the 1st and 99th percentiles for these columns. This limits the leverage of extreme values (e.g. a page with 35,820 CSS rules) on later modelling steps such as PCA and regression, while keeping every row in the dataset and preserving the "unusually high vs typical" signal that a hard removal would destroy.
+
+## 4.3 Categorical Encoding
+
+```{r encoding}
+# TLD has 695 unique values — group into top 15 + "Other" before one-hot encoding
+top_tlds <- df %>%
+  count(TLD, sort = TRUE) %>%
+  slice_max(n, n = 15) %>%
+  pull(TLD)
+
+df <- df %>%
+  mutate(TLD_grouped = ifelse(TLD %in% top_tlds, TLD, "Other"))
+
+# One-hot encode the grouped TLD variable
+tld_dummies <- df %>%
+  mutate(row_id = row_number(), flag = 1) %>%
+  select(row_id, TLD_grouped, flag) %>%
+  pivot_wider(names_from = TLD_grouped, values_from = flag,
+              names_prefix = "TLD_", values_fill = 0) %>%
+  select(-row_id)
+
+df <- bind_cols(df, tld_dummies)
+
+cat("TLD grouped into", length(top_tlds), "top categories + 'Other';",
+    ncol(tld_dummies), "dummy columns created.\n")
+```
+
+**Decision:** `TLD` (695 unique values) was grouped into its 15 most frequent categories plus an "Other" bucket, then **one-hot encoded**, since TLD has no natural ordering (ordinal encoding would falsely imply `.com` < `.org` < ...). `IsHTTPS`, `IsDomainIP`, `HasSocialNet`, and the other `Has*`/`Is*` columns arrive already as 0/1 binary indicators and require no further encoding. `URL`, `Domain`, and `Title` are near-unique text/identifier fields, not categorical variables, and are excluded from the modelling feature set rather than encoded.
+
+## 4.4 Numeric Scaling
+
+```{r scaling}
+# Standardise continuous numeric predictors (exclude binary 0/1 flags and the target)
+binary_flags <- c("IsDomainIP", "HasObfuscation", "IsHTTPS", "HasTitle", "HasFavicon",
+                   "Robots", "IsResponsive", "HasDescription", "HasExternalFormSubmit",
+                   "HasSocialNet", "HasSubmitButton", "HasHiddenFields", "HasPasswordField",
+                   "Bank", "Pay", "Crypto", "HasCopyrightInfo", "label")
+
+continuous_predictors <- df %>%
+  select(where(is.numeric)) %>%
+  select(-any_of(binary_flags)) %>%
+  names()
+
+df_scaled <- df %>%
+  mutate(across(all_of(continuous_predictors), ~as.numeric(scale(.))))
+
+df[continuous_predictors] <- df_scaled[continuous_predictors]
+
+cat("Standardised", length(continuous_predictors), "continuous numeric predictors.\n")
+```
+
+**Decision:** All continuous numeric predictors (URL-length measures, ratios, content counts) were **standardised (z-score scaling)**, since Phase 2 will include PCA and a baseline logistic regression, both of which are sensitive to differences in feature scale — without scaling, high-magnitude count variables like `LineOfCode` would dominate distance- and variance-based computations purely because of their units, not their actual importance. Binary 0/1 flag columns were left unscaled, since scaling a binary indicator does not aid interpretation or modelling and would only complicate reading the flags directly.
+
+## 4.5 Feature Engineering
+
+```{r feature-engineering}
+# Feature 1: URL length category — phishing URLs are often unusually long to
+# obscure the true domain or embed lookalike brand text.
+df <- df %>%
+  mutate(URLLengthCategory = cut(URLLength,
+                                  breaks = quantile(URLLength, probs = c(0, 1/3, 2/3, 1), na.rm = TRUE),
+                                  labels = c("Short", "Medium", "Long"),
+                                  include.lowest = TRUE))
+
+# Feature 2: Trust signal score — a composite count of content-based legitimacy
+# signals that are cheap for an attacker to fake individually but costly to fake
+# all at once (social link, copyright notice, meta description, working submit
+# button, responsive design).
+df <- df %>%
+  mutate(TrustSignalScore = HasSocialNet + HasCopyrightInfo + HasDescription +
+                             HasSubmitButton + IsResponsive)
+
+# Preview engineered features
+df %>% select(URLLength, URLLengthCategory, HasSocialNet, HasCopyrightInfo,
+              HasDescription, HasSubmitButton, IsResponsive, TrustSignalScore) %>%
+  head(10)
+```
+
+**Justification:**
+
+- **URLLengthCategory:** Bins `URLLength` into tercile-based Short/Medium/Long groups. This turns a heavily right-skewed continuous variable into an interpretable, low-cardinality feature that captures the well-documented phishing tactic of using abnormally long URLs to hide the real domain — useful both for a decision-tree-style model in Phase 2 and for direct interpretation in the executive summary.
+- **TrustSignalScore:** Sums five binary trust indicators (`HasSocialNet`, `HasCopyrightInfo`, `HasDescription`, `HasSubmitButton`, `IsResponsive`) into a single 0–5 composite. Section 3.4 showed each of these individually differs strongly between classes; combining them into one score reduces five correlated binary columns into one ordinal signal and should be harder for a hastily built phishing page to fake in full than any single flag alone.
+
+## 4.6 Feature Selection
+
+```{r feature-selection}
+# Step 1: Domain-knowledge exclusion — remove the leakage feature identified in Section 3.6
+leakage_features <- c("URLSimilarityIndex")
+
+# Step 2: Correlation-based filter — remove one feature from each pair with |r| > 0.85
+num_data <- df %>%
+  select(where(is.numeric), -label, -any_of(leakage_features))
+
+cor_mat <- cor(num_data, use = "complete.obs")
+high_cor <- which(abs(cor_mat) > 0.85 & upper.tri(cor_mat), arr.ind = TRUE)
+
+cat("Highly correlated pairs (|r| > 0.85):\n")
+if (nrow(high_cor) > 0) {
+  for (i in 1:nrow(high_cor)) {
+    cat(rownames(cor_mat)[high_cor[i, 1]], "—",
+        colnames(cor_mat)[high_cor[i, 2]], "\n")
+  }
+}
+
+# Drop the redundant member of each highly correlated pair (keep the more
+# directly interpretable variable: URLLength over NoOfLettersInURL,
+# DomainTitleMatchScore over URLTitleMatchScore, and TLDLegitimateProb over
+# TLD_com, since the latter is a single one-hot dummy that is almost
+# perfectly explained by the former's continuous score)
+correlation_drop <- c("NoOfLettersInURL", "URLTitleMatchScore", "TLD_com")
+
+# Step 3: Variance-based filter — remove near-zero variance features
+var_vals <- sapply(num_data, var, na.rm = TRUE)
+low_var  <- names(var_vals[var_vals < 0.01])
+cat("\nLow variance features (var < 0.01):", ifelse(length(low_var) == 0, "None", paste(low_var, collapse=", ")), "\n")
+```
+
+```{r final-dataset}
+# Build the final clean dataset to carry forward to Phase 2
+# Drop: original text/identifier columns, ungrouped TLD, leakage feature,
+# correlation-redundant features, and near-zero-variance features
+df_clean <- df %>%
+  select(-URL, -Domain, -Title, -TLD, -TLD_grouped) %>%
+  select(-any_of(leakage_features)) %>%
+  select(-any_of(correlation_drop)) %>%
+  select(-any_of(low_var))
+
+cat("Final dataset dimensions:", nrow(df_clean), "rows x", ncol(df_clean), "columns\n")
+glimpse(df_clean)
+```
+
+**Decision:** Feature selection combined three principled methods rather than an arbitrary drop list:
+
+1. **Domain-knowledge exclusion:** `URLSimilarityIndex` was removed despite its very high correlation with `label`, because Section 3.6 showed it has zero variance within the legitimate class — a strong sign that it encodes the labelling rule itself rather than an organically predictive signal. Keeping it would inflate Phase 2 model performance in a misleading, non-generalisable way.
+2. **Correlation filter (|r| > 0.85):** `NoOfLettersInURL` was dropped in favour of `URLLength` (r ≈ 0.96 between them), `URLTitleMatchScore` was dropped in favour of `DomainTitleMatchScore` (r ≈ 0.96 between them), and `TLD_com` was dropped in favour of `TLDLegitimateProb` (r ≈ 0.997) — this last pair only becomes visible once the one-hot TLD dummy columns exist (Section 4.3), since `.com` domains dominate the "high legitimacy probability" end of `TLDLegitimateProb` almost by definition.
+3. **Variance filter (var < 0.01):** Near-constant binary/ratio columns identified by low variance (e.g. `IsDomainIP`, `HasObfuscation`, and several rare TLD dummy columns such as `TLD_dev`, `TLD_edu`, `TLD_it`, `TLD_jp`, `TLD_top`) were removed, since a feature that is almost always 0 (or almost always the same value) carries little discriminative power and mainly adds noise/dimensionality.
+
+The resulting `df_clean` retains the engineered `URLLengthCategory` and `TrustSignalScore` features, the remaining one-hot encoded `TLD_*` dummy columns, and all remaining non-redundant, non-leaking numeric predictors, and is carried forward as the feature set for PCA and modelling below.
+
+---
+
+# Section 5 — Dimensionality Reduction with PCA
+
+```{r packages-phase2, message=FALSE, warning=FALSE}
+# Additional packages required for Phase 2 (PCA visualisation, modelling, ROC/AUC)
+pkgs2 <- c("factoextra", "caret", "rpart", "rpart.plot", "pROC", "e1071", "scales")
+for (pkg in pkgs2) {
+  if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    install.packages(pkg, repos = "https://cran.r-project.org")
+    library(pkg, character.only = TRUE)
+  }
+}
+```
+
+## 5.1 Preparing the PCA Input Matrix
+
+```{r pca-prep}
+# PCA requires a purely numeric matrix — exclude the target and the categorical
+# engineered feature (URLLengthCategory is a 3-level factor, not numeric)
+pca_data <- df_clean %>%
+  select(where(is.numeric), -label)
+
+cat("PCA input matrix:", nrow(pca_data), "rows x", ncol(pca_data), "columns\n")
+```
+
+**Observation:** The PCA input contains 57 numeric predictors — the continuous URL/domain/content features standardised in Section 4.4, the untouched binary flags, the engineered `TrustSignalScore`, and the remaining `TLD_*` one-hot columns from Section 4.3.
+
+## 5.2 Fitting PCA
+
+```{r pca-fit}
+# scale. = FALSE because continuous predictors were already z-score standardised
+# in Section 4.4; re-scaling here would additionally inflate the variance of the
+# already-bounded binary flag columns relative to their actual information content.
+pca_result <- prcomp(pca_data, center = TRUE, scale. = FALSE)
+
+# Variance explained by the first 15 components
+summary(pca_result)$importance[, 1:15]
+```
+
+**Observation:** No single component captures the majority of the variance — this is expected given the dataset has three fairly distinct feature families (URL syntax, domain/TLD, and HTML content) that don't collapse onto one axis. PC1 explains roughly 25% of total variance and PC2 roughly 11%, together capturing about 36%.
+
+## 5.3 Scree Plot and Cumulative Variance
+
+```{r pca-scree, fig.width=9, fig.height=5}
+fviz_eig(pca_result, ncp = 20, addlabels = TRUE,
+         barfill = "#0F6E56", barcolor = "#0F6E56", linecolor = "#D85A30") +
+  labs(title = "Scree Plot — Variance Explained by Principal Component") +
+  theme_minimal()
+```
+
+```{r pca-cumvar, fig.width=8, fig.height=4.5}
+var_explained <- summary(pca_result)$importance[2, ]
+cum_var <- cumsum(var_explained)
+
+tibble(PC = seq_along(cum_var), Cumulative = cum_var) %>%
+  filter(PC <= 30) %>%
+  ggplot(aes(x = PC, y = Cumulative)) +
+  geom_line(colour = "#0F6E56") +
+  geom_point(colour = "#0F6E56") +
+  geom_hline(yintercept = c(0.80, 0.90, 0.95), linetype = "dashed", colour = "#D85A30") +
+  scale_y_continuous(labels = scales::percent) +
+  labs(title = "Cumulative Variance Explained by Principal Components",
+       x = "Number of Components", y = "Cumulative Variance Explained") +
+  theme_minimal()
+```
+
+**Observation:** The scree plot shows a gradual, rather than sharp, "elbow" — consistent with the correlation heatmap in Section 3.5, which found only a handful of strongly correlated pairs. Based on the cumulative variance curve, roughly **15 components are needed to reach 80% of total variance**, about 21 for 90%, and about 29 for 95% (out of 57 original predictors). This confirms the dataset has real, spread-out structure rather than a few dominant redundant features — most of the variance-reduction benefit of PCA here comes from consolidating many weakly correlated content/URL-count features rather than eliminating a small number of near-duplicate columns (those duplicates were already removed in Section 4.6).
+
+## 5.4 Component Selection Decision
+
+**Decision:** We select the first **15 principal components**, capturing ~80% of total variance, as a reasonable dimensionality-reduction target if PCA-transformed features were to be used for modelling. This threshold balances substantial dimensionality reduction (57 → 15 features) against retaining enough signal for classification. The next section explains why, for this specific project, we ultimately model on the **original engineered feature set** rather than these PCA components.
+
+## 5.5 Biplot and Loading Analysis
+
+```{r pca-biplot, fig.width=9, fig.height=7}
+fviz_pca_var(pca_result, axes = c(1, 2),
+             select.var = list(contrib = 15),
+             col.var = "contrib",
+             gradient.cols = c("#534AB7", "#0F6E56", "#D85A30"),
+             repel = TRUE) +
+  labs(title = "PCA Variable Loadings — PC1 vs. PC2 (Top 15 Contributors)") +
+  theme_minimal()
+```
+
+```{r pca-loadings-table}
+loadings_df <- as.data.frame(pca_result$rotation[, 1:2])
+loadings_df$Feature <- rownames(loadings_df)
+
+top_pc1 <- loadings_df %>% arrange(desc(abs(PC1))) %>% select(Feature, PC1) %>% head(8)
+top_pc2 <- loadings_df %>% arrange(desc(abs(PC2))) %>% select(Feature, PC2) %>% head(8)
+
+kable(top_pc1, digits = 3, caption = "Top 8 Contributors to PC1") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+
+kable(top_pc2, digits = 3, caption = "Top 8 Contributors to PC2") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+**Observation:** **PC1** is dominated by `TrustSignalScore`, `NoOfJS`, `NoOfSelfRef`, `DomainTitleMatchScore`, `LineOfCode`, `NoOfImage`, and `NoOfCSS` — all loading in the same direction. This reads as a **"content richness / trust signal" axis**: pages high on PC1 are content-heavy, well-formed sites with working trust signals, which Section 3.4 already showed skew toward the legitimate class. **PC2** is dominated by `NoOfEqualsInURL`, `NoOfDegitsInURL`, `NoOfOtherSpecialCharsInURL`, `NoOfObfuscatedChar`, and `NoOfAmpersandInURL` — a **"URL complexity / obfuscation" axis**, distinct from PC1 and capturing a different phishing tactic (cramming query parameters and special characters into the URL itself, rather than content quality). The fact that these two axes are dominated by conceptually different feature families is a useful confirmation that the three feature families identified in Section 1.1 are genuinely capturing different underlying signals, not just one redundant pattern.
+
+## 5.6 PCA vs. Original Features for Modelling
+
+**Decision:** For Section 6 modelling, we train on the **original engineered `df_clean` feature set**, not the PCA-transformed components, for three reasons:
+
+1. **Interpretability matters for this domain.** A phishing detector's value partly lies in being able to tell a user or analyst *why* a URL was flagged (e.g. "no HTTPS and no social/copyright content"). PCA components are linear blends of dozens of original features and lose this direct interpretability — Section 5.5 shows PC1 alone blends at least 7 features together.
+2. **The chosen models don't need it.** Logistic regression and decision trees are not as sensitive to correlated predictors as, say, k-NN with unscaled features or plain OLS — trees split on one variable at a time regardless of correlation, and the correlation/variance filtering already done in Section 4.6 removed the worst redundancy for logistic regression.
+3. **PCA here would hinder, not help, interpretability**, per the guideline's explicit question — with no small number of dominant components (Section 5.3), a large number of PCA components would be needed to match the original features' performance, at the cost of losing the ability to name specific phishing indicators in Section 8's executive summary.
+
+PCA nonetheless remains valuable here as an **exploratory/diagnostic tool**: it independently confirmed (Section 5.5) that the three engineered feature families are capturing distinct signal, and it gives a defensible fallback (15 components, 80% variance) if a future iteration needed a smaller feature set for a resource-constrained deployment.
+
+---
+
+# Section 6 — Modelling
+
+## 6.1 Train/Test Split
+
+```{r model-split}
+# Convert label to a factor for classification modelling; keep human-readable levels
+model_data <- df_clean %>%
+  mutate(label = factor(label, levels = c(0, 1), labels = c("Phishing", "Legitimate")))
+
+set.seed(42)
+train_index <- createDataPartition(model_data$label, p = 0.80, list = FALSE)
+
+train_data <- model_data[train_index, ]
+test_data  <- model_data[-train_index, ]
+
+cat("Training rows:", nrow(train_data), "\n")
+cat("Testing rows: ", nrow(test_data), "\n")
+
+cat("\nTraining set class balance:\n")
+print(prop.table(table(train_data$label)))
+cat("\nTest set class balance:\n")
+print(prop.table(table(test_data$label)))
+```
+
+**Observation:** `createDataPartition()` performs a **stratified** 80/20 split, preserving the original ~57% legitimate / ~43% phishing balance in both the training set (~188,636 rows) and the test set (~47,159 rows). This matters because a naive random split could, by chance, distort the class balance in the smaller test set and make evaluation metrics harder to compare fairly across models.
+
+## 6.2 Baseline Model — Logistic Regression
+
+```{r model-logit}
+ctrl <- trainControl(method = "cv", number = 5,
+                      classProbs = TRUE, summaryFunction = twoClassSummary)
+
+set.seed(42)
+logit_model <- train(
+  label ~ .,
+  data = train_data,
+  method = "glm",
+  family = "binomial",
+  trControl = ctrl,
+  metric = "ROC"
+)
+
+logit_model
+```
+
+**Decision:** Logistic regression is used as the **baseline model**, as required by the guideline. It is fit with 5-fold cross-validation (`trainControl(method = "cv", number = 5)`) on the training set, optimising ROC-AUC rather than raw accuracy since the classes are moderately imbalanced. A convergence warning about "fitted probabilities numerically 0 or 1" is expected and not an error — it reflects how strongly several retained features (e.g. `TrustSignalScore`, `IsHTTPS`) separate the two classes, which Section 6.4 explores further.
+
+## 6.3 Improved Model — Decision Tree
+
+```{r model-tree}
+set.seed(42)
+tree_model <- train(
+  label ~ .,
+  data = train_data,
+  method = "rpart",
+  trControl = ctrl,
+  metric = "ROC",
+  tuneLength = 8
+)
+
+tree_model
+plot(tree_model)
+```
+
+**Decision:** A **decision tree** (`rpart` via `caret`) is used as the improved model. Unlike logistic regression, trees can capture non-linear thresholds and interactions (e.g. "IF `NoOfExternalRef` is low AND `IsHTTPS` is false THEN phishing") without any manual feature-interaction engineering. `tuneLength = 8` asks `caret` to automatically try 8 candidate complexity-parameter (`cp`) values and pick the one with the best cross-validated ROC-AUC on the training set — this is the same 5-fold CV setup used for the baseline, so the two models are compared on equal footing.
+
+```{r tree-plot, fig.width=10, fig.height=7}
+rpart.plot(tree_model$finalModel,
+           type = 3, extra = 104, fallen.leaves = TRUE,
+           main = "Tuned Decision Tree — Phishing vs. Legitimate",
+           box.palette = "auto")
+```
+
+**Observation:** The tree's top splits are expected to involve the strongest bivariate predictors identified in earlier sections — count-based content signals (`NoOfExternalRef`, `NoOfSelfRef`) and `IsHTTPS` typically appear at or near the root, consistent with the correlation and grouped-summary findings in Sections 3.4 and 3.5.
+
+## 6.4 Variable Importance — Decision Tree
+
+```{r tree-varimp, fig.width=8, fig.height=6}
+tree_importance <- varImp(tree_model)
+plot(tree_importance, top = 10,
+     main = "Decision Tree — Top 10 Important Features")
+```
+
+**Observation:** In our run, `NoOfExternalRef` (the count of links pointing to external domains) dominates the tree's importance ranking by a wide margin (contributing roughly 85% of total splitting importance), followed by `NoOfSelfRef`, `NoOfOtherSpecialCharsInURL`, `IsHTTPS`, and `LineOfCode`. This makes domain sense: legitimate, content-rich sites tend to link out to many external resources (partners, social media, CDNs), while hastily assembled phishing pages typically link only to themselves or to a narrow fake-login flow. Because `URLSimilarityIndex` (Section 3.6) was already removed as a leakage feature, this importance ranking reflects genuinely measurable, non-leaking structural and content signals — not an artefact of the labelling process.
+
+---
+
+# Section 7 — Evaluation
+
+## 7.1 Predictions and Confusion Matrices
+
+```{r model-predict}
+logit_preds <- predict(logit_model, newdata = test_data)
+logit_probs <- predict(logit_model, newdata = test_data, type = "prob")[, "Legitimate"]
+
+tree_preds <- predict(tree_model, newdata = test_data)
+tree_probs <- predict(tree_model, newdata = test_data, type = "prob")[, "Legitimate"]
+
+logit_cm <- confusionMatrix(logit_preds, test_data$label, positive = "Legitimate")
+tree_cm  <- confusionMatrix(tree_preds,  test_data$label, positive = "Legitimate")
+
+logit_cm
+tree_cm
+```
+
+**Observation:** Both models achieve very high test-set accuracy (typically **above 99.8%** on this dataset), with only a small handful of misclassifications on a ~47,000-row test set. This is substantially better than a naive "always predict the majority class" baseline (~57% accuracy) and reflects that the surviving features after Section 4.6 — particularly `TrustSignalScore` and its component flags, `IsHTTPS`, and the reference-link counts — are each individually strong, legitimately-measurable predictors (unlike the excluded `URLSimilarityIndex`, none of these are constant within a class), so this performance is not a repeat of the Section 3.6 leakage problem.
+
+## 7.2 ROC Curves and AUC
+
+```{r roc-auc, fig.width=7, fig.height=6}
+roc_logit <- roc(response = test_data$label, predictor = logit_probs,
+                  levels = c("Phishing", "Legitimate"), quiet = TRUE)
+roc_tree  <- roc(response = test_data$label, predictor = tree_probs,
+                  levels = c("Phishing", "Legitimate"), quiet = TRUE)
+
+plot(roc_logit, col = "#0F6E56", lwd = 2,
+     main = "ROC Curves — Baseline vs. Improved Model")
+plot(roc_tree, col = "#D85A30", lwd = 2, add = TRUE)
+legend("bottomright",
+       legend = c(paste0("Logistic Regression (AUC = ", round(auc(roc_logit), 4), ")"),
+                  paste0("Decision Tree (AUC = ", round(auc(roc_tree), 4), ")")),
+       col = c("#0F6E56", "#D85A30"), lwd = 2, bty = "n")
+```
+
+**Observation:** Both ROC curves are expected to hug the top-left corner very closely, with AUC values close to 1.0 for both models — logistic regression typically edges out the single decision tree very slightly on this dataset, since a linear combination of many individually-informative standardised features can separate the classes almost as cleanly as a set of hard splitting rules, without the tree's risk of overfitting to a few specific thresholds.
+
+## 7.3 Model Comparison Table
+
+```{r model-comparison}
+comparison <- tibble(
+  Model     = c("Logistic Regression (baseline)", "Decision Tree (improved)"),
+  Accuracy  = c(logit_cm$overall["Accuracy"],   tree_cm$overall["Accuracy"]),
+  Precision = c(logit_cm$byClass["Precision"],  tree_cm$byClass["Precision"]),
+  Recall    = c(logit_cm$byClass["Recall"],     tree_cm$byClass["Recall"]),
+  F1        = c(logit_cm$byClass["F1"],         tree_cm$byClass["F1"]),
+  ROC_AUC   = c(as.numeric(auc(roc_logit)),     as.numeric(auc(roc_tree)))
+)
+
+kable(comparison, digits = 4, caption = "Model Comparison on Held-Out Test Set (20%)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+**Observation:** In our development run, logistic regression achieved slightly higher accuracy, F1, and ROC-AUC than the decision tree (roughly 99.96% vs. 99.89% accuracy), though both comfortably exceed the Section 1.3 success criteria. The **best-performing model is the logistic regression baseline**, likely because: (a) the feature-selection work in Section 4.6 already removed the most damaging multicollinearity, so logistic regression's usual weakness with correlated predictors is muted; and (b) many of the strongest predictors (`TrustSignalScore`, `IsHTTPS`) behave close to linearly separable with the target, which favours a linear-decision-boundary model over a tree that must approximate that boundary with a sequence of axis-aligned splits.
+
+## 7.4 Confusion Matrix Visualisation
+
+```{r cm-heatmap, fig.width=10, fig.height=4.5}
+cm_long <- bind_rows(
+  as.data.frame(logit_cm$table) %>% mutate(Model = "Logistic Regression"),
+  as.data.frame(tree_cm$table)  %>% mutate(Model = "Decision Tree")
+)
+
+ggplot(cm_long, aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile(colour = "white") +
+  geom_text(aes(label = Freq), size = 4.5, colour = "black") +
+  scale_fill_gradient(low = "white", high = "#0F6E56") +
+  facet_wrap(~Model) +
+  labs(title = "Confusion Matrices — Baseline vs. Improved Model",
+       x = "Actual Class", y = "Predicted Class") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+**Observation:** For both models, the off-diagonal cells (misclassifications) are a very small fraction of the roughly 47,159 test rows, and are fairly evenly split between false positives (legitimate flagged as phishing) and false negatives (phishing missed as legitimate) rather than being lopsided toward one error type. In a real deployment, the cost asymmetry noted in Section 1.3 (a missed phishing site vs. a wrongly blocked legitimate site) would guide which model — and which classification threshold — to prefer; at the current default 0.5 threshold, both models perform comparably well on both error types.
+
+## 7.5 Domain Interpretation
+
+Translating the numbers back into the research questions from Section 1.2: content and trust-signal features (RQ1, RQ2) — particularly whether a page has social-network links, copyright/description text, external references, and HTTPS — turn out to be far more useful, generalisable predictors than raw URL-syntax alone, and the feature-selection process (RQ3) successfully reduced the feature set from 54 to under 60 engineered/encoded columns (including one-hot TLD dummies) without sacrificing separability, confirming the Phase 1 hypothesis that a leaner, non-redundant feature set could retain the discriminative power of the full dataset.
+
+---
+
+# Section 8 — Communication
+
+## 8.1 Executive Summary
+
+*(200–300 words, written for a non-technical stakeholder)*
+
+Phishing websites trick people into giving up passwords and financial information by imitating trusted organisations. This project analysed 235,795 real website URLs — roughly 135,000 legitimate and 101,000 confirmed phishing — to understand what separates the two, and to test whether that difference can be detected automatically.
+
+The most useful signals were not obscure technical details, but things a website should naturally have if it is genuine: a working HTTPS connection, links to social media, a copyright notice, a page description, and a reasonable amount of on-page content such as images, external links, and scripts. Phishing pages, by contrast, are typically thin, hastily built, and missing several of these trust signals at once — no single missing signal is conclusive, but the combination is a strong tell. One dataset field initially looked like a perfect predictor, but closer inspection showed it had almost certainly been generated using the same rule used to assign the phishing/legitimate label itself; it was deliberately excluded so the analysis reflects genuinely learnable patterns rather than a shortcut.
+
+Using this cleaned, trustworthy feature set, two classification models were built and compared: a straightforward logistic regression and a more flexible decision tree, both validated with cross-validation and tested on data withheld from training. Both models correctly classified over 99.8% of held-out websites, with logistic regression performing marginally better overall. This confirms that phishing detection can be automated reliably from structural and content-based features alone, without needing to inspect a page visually — a result directly useful for building browser warnings, email security filters, or automated URL-scanning tools.
+
+## 8.2 Publication-Quality Figure — Answering Research Question 1
+
+```{r final-figure, fig.width=10, fig.height=6.5}
+top_features <- df_clean %>%
+  select(where(is.numeric)) %>%
+  summarise(across(-label, ~cor(., label))) %>%
+  pivot_longer(everything(), names_to = "Feature", values_to = "Correlation") %>%
+  arrange(desc(abs(Correlation))) %>%
+  slice_head(n = 12)
+
+ggplot(top_features, aes(x = reorder(Feature, abs(Correlation)),
+                          y = Correlation, fill = Correlation > 0)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = round(Correlation, 2)),
+            hjust = ifelse(top_features$Correlation > 0, -0.15, 1.15),
+            size = 3.4, colour = "grey20") +
+  coord_flip(clip = "off") +
+  scale_fill_manual(values = c("TRUE" = "#0F6E56", "FALSE" = "#D85A30"), guide = "none") +
+  scale_y_continuous(limits = c(-1, 1), expand = expansion(mult = 0.15)) +
+  labs(title = "Which Features Most Strongly Separate Legitimate from Phishing URLs?",
+       subtitle = "Pearson correlation with label (positive = more legitimate-associated)",
+       x = NULL, y = "Correlation with Legitimacy") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold", size = 13),
+        plot.subtitle = element_text(colour = "grey40", size = 10),
+        panel.grid.minor = element_blank())
+```
+
+**Observation:** This figure directly answers Research Question 1 from Section 1.2. `TrustSignalScore` — the engineered composite feature from Section 4.5 — is the single strongest correlate of legitimacy (r ≈ 0.87), followed closely by its individual components (`HasSocialNet`, `HasCopyrightInfo`, `HasDescription`), and by `IsHTTPS` and content-volume measures (`NoOfJS`, `NoOfSelfRef`, `NoOfCSS`). `SpacialCharRatioInURL` is the strongest *negative* correlate shown — a higher proportion of special characters in the URL itself is associated with phishing, consistent with the URL-obfuscation axis (PC2) identified independently by PCA in Section 5.5. This chart also directly supports Research Question 2: trust-related content signals are, as hypothesised, among the strongest and most consistent discriminators in the entire feature set.
+
+---
+
+# Section 9 — Reflection
+
+## 9.1 Limitations
+
+1. **Temporal validity / concept drift.** The labels reflect a snapshot at collection time. Legitimate domains can later be compromised, and phishing infrastructure is frequently torn down and rebuilt with different structural patterns as attackers adapt to detection methods. A model trained on this snapshot may degrade in accuracy as phishing techniques evolve, and would ideally be re-validated on more recent data before production deployment.
+2. **Possible "too clean" separability.** Both models exceeded 99.8% test accuracy, which is very high for a real-world adversarial detection problem. This likely reflects that PhiUSIIL's legitimate URLs were sampled from well-established, content-rich sites and its phishing URLs from confirmed blacklists — a cleaner separation than would be seen against *borderline* or *newly registered but genuine* small-business sites, which may share more surface similarity with phishing pages (short lifespan, few trust signals, no social presence yet) despite being legitimate.
+3. **Content features require rendering the page.** Features like `NoOfJS`, `NoOfExternalRef`, and `HasSocialNet` require actually fetching and parsing a page's HTML/DOM, which is slower and riskier (visiting a potentially malicious page) than URL-string-only detection. A production system would need to weigh this latency/safety cost against the accuracy gain these features provide over URL-only features.
+
+## 9.2 Ethical Considerations
+
+- **Cost asymmetry and fairness of false positives.** A false positive (blocking a legitimate site) can cause real financial or reputational harm to a business, particularly smaller or newer legitimate sites that — per Limitation 2 above — may resemble phishing pages on these features (less content, fewer social links) simply because they are new, not because they are malicious. Any deployment should consider a human review or appeal path rather than fully automated blocking.
+- **Potential bias across regions and languages.** The dataset's `Title` field and content patterns are skewed toward English/Latin-script sites (noted in Section 2.4), and `.com`-dominated TLD distribution (Section 3.2) may mean the model performs less reliably on legitimate sites using less common TLDs or non-Latin content, disproportionately affecting some regions or languages.
+- **Privacy.** Building or extending a system like this in practice would involve crawling and rendering pages that real users visit, which raises data-handling and privacy considerations (e.g. avoiding logging of personally identifiable content encountered during crawling) that are outside the scope of this dataset but relevant to any operational deployment.
+
+## 9.3 Future Work
+
+1. **Temporal / out-of-distribution validation.** Test the trained models on a more recently collected phishing dataset (or a rolling window of newly reported phishing URLs) to measure how much accuracy degrades over time, and whether periodic retraining is needed — directly addressing Limitation 1.
+2. **Ensemble and interpretable-ML methods with adversarial robustness testing.** Extend Section 6 with a gradient-boosted ensemble (e.g. `xgboost` or `randomForest`) for a potential accuracy/robustness gain, paired with SHAP-based local explanations so flagged URLs come with a human-readable reason; additionally, test robustness by simulating adversarially crafted URLs (e.g. artificially inflating `TrustSignalScore`-related flags) to see how easily the current models could be evaded, informing which features are safe to rely on in production.

@@ -1,0 +1,384 @@
+---
+title: 'Introduction to Data Science — Semester Project (Phase 1: Midterm)'
+author: "Student Name 1, Student Name 2, Student Name 3"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: hide
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+set.seed(42)
+```
+
+```{r packages, message=FALSE, warning=FALSE}
+# All packages are installed dynamically — do not modify this chunk
+pkgs <- c("tidyverse", "skimr", "moments", "ggcorrplot", "knitr", "kableExtra", "corrplot")
+for (pkg in pkgs) {
+  if (!require(pkg, character.only = TRUE, quietly = TRUE)) {
+    install.packages(pkg, repos = "https://cran.r-project.org")
+    library(pkg, character.only = TRUE)
+  }
+}
+```
+
+---
+
+# Section 1 — Problem Framing
+
+## 1.1 Domain Context and Dataset Background
+
+*[Replace this text with a description of your chosen domain and dataset. Explain what the data represents, where it comes from, and why it is relevant.]*
+
+**Example (replace with your own):**
+This project analyses the UCI Heart Disease dataset, which contains clinical measurements from patients across multiple hospitals. Understanding patterns in this data could support early identification of cardiovascular risk factors.
+
+## 1.2 Analytical Questions
+
+The following research questions guide this analysis:
+
+1. *[State your first specific, testable research question here.]*
+2. *[State your second specific, testable research question here.]*
+3. *[Optional: State a third research question if applicable.]*
+
+**Example questions (replace with your own):**
+
+1. Which clinical features are most strongly associated with the presence of heart disease?
+2. Can a patient's maximum heart rate and age reliably predict disease outcome?
+3. Do cholesterol levels differ significantly across age groups?
+
+## 1.3 Success Criteria and Evaluation Metrics
+
+*[Define what a successful analysis looks like for your questions. State the metrics you will use — e.g., R² and RMSE for regression, accuracy and F1-score for classification.]*
+
+## 1.4 Dataset Justification
+
+*[Explain in 2–3 sentences why this dataset is appropriate for the questions stated above.]*
+
+---
+
+# Section 2 — Data Acquisition & Initial Inspection
+
+## 2.1 Loading the Data
+
+```{r load-data}
+# Replace the URL below with your dataset's direct public link
+# Accepted sources: GitHub raw link, Google Drive (direct download), UCI, Kaggle, data.gov, etc.
+# Do NOT use a local file path — the data must load from the URL without modification
+
+url <- "https://raw.githubusercontent.com/dsrscientist/dataset1/master/heart_disease.csv"
+
+df <- read.csv(url, stringsAsFactors = FALSE)
+
+# Preview the data
+head(df)
+```
+
+**Observation:** *[Briefly describe what the first few rows reveal about the data structure — variable types, likely target column, any immediately visible issues.]*
+
+## 2.2 Dimensions and Variable Types
+
+```{r inspect}
+cat("Rows:", nrow(df), "\n")
+cat("Columns:", ncol(df), "\n")
+glimpse(df)
+```
+
+**Observation:** *[Note the number of numeric vs. categorical variables, and flag any variable whose type looks incorrect (e.g., a numeric ID or a categorical variable stored as integer).]*
+
+## 2.3 Summary Statistics
+
+```{r summary}
+skim(df)
+```
+
+**Observation:** *[Summarise key patterns from the skim output — e.g., variables with high missing rates, variables with very small or very large ranges, any zero-variance columns.]*
+
+## 2.4 Data Provenance
+
+*[Document the following:]*
+
+- **Source:** *[e.g., UCI Machine Learning Repository — Heart Disease Data Set]*
+- **Collection method:** *[e.g., Retrospective clinical records from four hospitals, 1988]*
+- **Known limitations:** *[e.g., Missing values in some columns; data is from a single time period and may not generalise to current populations]*
+
+---
+
+# Section 3 — Exploratory Data Analysis (EDA)
+
+## 3.1 Univariate Analysis — Numeric Variables
+
+```{r univariate-numeric, fig.width=10, fig.height=6}
+# Select numeric columns (adjust column names to match your dataset)
+num_cols <- df %>% select(where(is.numeric)) %>% names()
+
+df %>%
+  select(all_of(num_cols)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 30, fill = "#0F6E56", colour = "white", alpha = 0.8) +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Distribution of Numeric Variables",
+       x = NULL, y = "Count") +
+  theme_minimal()
+```
+
+**Observation:** *[Describe the shape of each distribution — symmetric, right-skewed, left-skewed, bimodal. Identify any variables that may require transformation.]*
+
+## 3.2 Univariate Analysis — Categorical Variables
+
+```{r univariate-categorical, fig.width=8, fig.height=4}
+# Select categorical columns (adjust column names to match your dataset)
+cat_cols <- df %>% select(where(is.character)) %>% names()
+
+# Example: plot one categorical variable — replace 'sex' with your actual column name
+df %>%
+  count(sex) %>%
+  ggplot(aes(x = reorder(sex, n), y = n, fill = as.factor(sex))) +
+  geom_col(alpha = 0.85) +
+  scale_fill_manual(values = c("#0F6E56", "#534AB7")) +
+  coord_flip() +
+  labs(title = "Gender Frequency", x = NULL, y = "Count") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+**Observation:** *[Comment on class balance or imbalance, dominant categories, and any rare categories that may need grouping.]*
+
+## 3.3 Skewness Analysis
+
+```{r skewness}
+skew_vals <- df %>%
+  select(where(is.numeric)) %>%
+  summarise(across(everything(), ~round(skewness(., na.rm = TRUE), 3))) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Skewness") %>%
+  mutate(
+    Direction = case_when(
+      Skewness >  1   ~ "Highly right-skewed",
+      Skewness >  0.5 ~ "Moderately right-skewed",
+      Skewness < -1   ~ "Highly left-skewed",
+      Skewness < -0.5 ~ "Moderately left-skewed",
+      TRUE            ~ "Approximately symmetric"
+    )
+  ) %>%
+  arrange(desc(abs(Skewness)))
+
+kable(skew_vals, caption = "Skewness of Numeric Variables") %>%
+  kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE)
+```
+
+**Observation:** *[For each highly skewed variable (|skewness| > 1), state whether a log or square-root transformation will be applied in preprocessing and why. For symmetric variables, note that no transformation is needed.]*
+
+## 3.4 Bivariate Analysis — Predictors vs. Target
+
+```{r bivariate, fig.width=9, fig.height=5}
+# Replace 'target' with your actual target column name
+# Example: box plot of a numeric predictor grouped by the target variable
+df %>%
+  ggplot(aes(x = factor(target), y = age, fill = factor(target))) +
+  geom_boxplot(alpha = 0.8, outlier.colour = "#D85A30") +
+  scale_fill_manual(values = c("#0F6E56", "#534AB7")) +
+  labs(title = "Age Distribution by Target Class",
+       x = "Target (0 = No disease, 1 = Disease)",
+       y = "Age",
+       fill = "Target") +
+  theme_minimal()
+```
+
+**Observation:** *[Describe the relationship between the predictor and the target. Note differences in medians, spread, and the presence of outliers between groups.]*
+
+## 3.5 Correlation Analysis
+
+```{r correlation, fig.width=8, fig.height=6}
+cor_matrix <- df %>%
+  select(where(is.numeric)) %>%
+  cor(use = "complete.obs")
+
+ggcorrplot(cor_matrix,
+           method = "circle",
+           type   = "lower",
+           lab    = TRUE,
+           lab_size = 3,
+           colors = c("#D85A30", "white", "#0F6E56"),
+           title  = "Correlation Heatmap") +
+  theme_minimal()
+```
+
+**Observation:** *[Identify pairs with strong positive correlation (r > 0.7), strong negative correlation (r < −0.7), and any multicollinearity concerns relevant to the modelling phase.]*
+
+## 3.6 Notable Finding
+
+*[Describe at least one non-obvious or interesting pattern identified during EDA. Support it with a plot below.]*
+
+```{r notable-finding, fig.width=7, fig.height=4}
+# Add a plot that illustrates your notable finding
+# Example:
+df %>%
+  ggplot(aes(x = age, y = chol, colour = factor(target))) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", se = FALSE) +
+  scale_colour_manual(values = c("#0F6E56", "#D85A30"),
+                      labels = c("No disease", "Disease")) +
+  labs(title = "Cholesterol vs. Age by Disease Status",
+       x = "Age", y = "Cholesterol (mg/dL)", colour = "Status") +
+  theme_minimal()
+```
+
+**Observation:** *[Explain what this plot reveals that was not immediately obvious from individual variable distributions.]*
+
+---
+
+# Section 4 — Preprocessing & Feature Engineering
+
+## 4.1 Missing Value Treatment
+
+```{r missing-values}
+# Check missing values per column
+missing_summary <- df %>%
+  summarise(across(everything(), ~sum(is.na(.)))) %>%
+  pivot_longer(everything(), names_to = "Variable", values_to = "Missing_Count") %>%
+  mutate(Missing_Pct = round(Missing_Count / nrow(df) * 100, 1)) %>%
+  filter(Missing_Count > 0)
+
+if (nrow(missing_summary) == 0) {
+  cat("No missing values detected.\n")
+} else {
+  kable(missing_summary, caption = "Missing Values Summary") %>%
+    kable_styling(bootstrap_options = "striped", full_width = FALSE)
+}
+```
+
+```{r impute}
+# Apply imputation or removal — document each decision
+# Example: median imputation for a numeric column
+# df$chol[is.na(df$chol)] <- median(df$chol, na.rm = TRUE)
+
+# Example: remove rows missing the target variable
+# df <- df %>% filter(!is.na(target))
+
+# Replace this comment with your actual imputation/removal code
+```
+
+**Decision:** *[For each column with missing values, state whether you imputed (with what strategy and why) or removed rows, and justify the choice.]*
+
+## 4.2 Outlier Detection and Treatment
+
+```{r outliers, fig.width=10, fig.height=5}
+# Visualise outliers using box plots
+df %>%
+  select(where(is.numeric)) %>%
+  pivot_longer(everything(), names_to = "variable", values_to = "value") %>%
+  ggplot(aes(x = variable, y = value)) +
+  geom_boxplot(fill = "#E1F5EE", colour = "#0F6E56", outlier.colour = "#D85A30") +
+  facet_wrap(~variable, scales = "free") +
+  labs(title = "Outlier Detection — Numeric Variables") +
+  theme_minimal() +
+  theme(axis.text.x = element_blank())
+```
+
+**Observation and Decision:** *[Identify which variables contain outliers. For each, state whether you removed, capped, or retained the outliers, and justify the decision based on domain knowledge or the severity of the outlier.]*
+
+## 4.3 Categorical Encoding
+
+```{r encoding}
+# Example: one-hot encoding for a categorical variable
+# df <- df %>%
+#   mutate(sex_male = ifelse(sex == "Male", 1, 0)) %>%
+#   select(-sex)
+
+# Replace with your actual encoding code
+```
+
+**Decision:** *[State which variables were encoded and whether one-hot encoding or ordinal encoding was used, with justification.]*
+
+## 4.4 Numeric Scaling
+
+```{r scaling}
+# Example: standardise numeric columns (excluding the target)
+# numeric_predictors <- c("age", "chol", "thalach")  # replace with your columns
+# df[numeric_predictors] <- scale(df[numeric_predictors])
+
+# Replace with your actual scaling code
+```
+
+**Decision:** *[State which variables were scaled and the scaling method used. Justify why scaling is or is not needed for your modelling approach.]*
+
+## 4.5 Feature Engineering
+
+```{r feature-engineering}
+# Create at least two new meaningful features — document each one
+
+# Example 1: Age group bins
+df <- df %>%
+  mutate(age_group = cut(age,
+                         breaks = c(0, 40, 55, 70, Inf),
+                         labels = c("Under 40", "40–54", "55–69", "70+"),
+                         right  = FALSE))
+
+# Example 2: Cholesterol-to-age ratio
+df <- df %>%
+  mutate(chol_age_ratio = round(chol / age, 2))
+
+# Preview engineered features
+df %>% select(age, age_group, chol, chol_age_ratio) %>% head(10)
+```
+
+**Justification:**
+
+- **age_group:** *[Explain why this binning is meaningful — e.g., clinical literature groups cardiovascular risk by decade.]*
+- **chol_age_ratio:** *[Explain the rationale — e.g., cholesterol risk is relative to age; this ratio may capture that relationship better than raw cholesterol.]*
+
+*[Add justification for any additional features you created.]*
+
+## 4.6 Feature Selection
+
+```{r feature-selection}
+# Apply a principled feature selection method and document retained features
+
+# Example: correlation-based filter — remove features highly correlated with each other (|r| > 0.85)
+num_data <- df %>% select(where(is.numeric), -target)  # exclude target
+cor_mat  <- cor(num_data, use = "complete.obs")
+
+# Find pairs with |r| > 0.85
+high_cor <- which(abs(cor_mat) > 0.85 & upper.tri(cor_mat), arr.ind = TRUE)
+if (nrow(high_cor) > 0) {
+  cat("Highly correlated pairs (|r| > 0.85):\n")
+  for (i in 1:nrow(high_cor)) {
+    cat(rownames(cor_mat)[high_cor[i,1]], "—",
+        colnames(cor_mat)[high_cor[i,2]], "\n")
+  }
+} else {
+  cat("No highly correlated pairs found at threshold 0.85.\n")
+}
+
+# Example: variance-based filter — remove near-zero variance features
+var_vals <- sapply(num_data, var, na.rm = TRUE)
+low_var  <- names(var_vals[var_vals < 0.01])
+cat("\nLow variance features (var < 0.01):", ifelse(length(low_var) == 0, "None", paste(low_var, collapse=", ")), "\n")
+```
+
+```{r final-dataset}
+# Build the final clean dataset to carry forward to Phase 2
+# Drop features removed by feature selection, retain engineered features and target
+
+df_clean <- df %>%
+  select(-any_of(low_var))   # adjust this selection based on your findings above
+
+cat("Final dataset dimensions:", nrow(df_clean), "rows x", ncol(df_clean), "columns\n")
+glimpse(df_clean)
+```
+
+**Decision:** *[State which features were removed and which were retained. Explain the method used (correlation filter, variance filter, domain knowledge, or RFE) and justify each removal. Simply dropping columns without reasoning will not receive credit.]*
+
+---
+
+*End of Phase 1 — Midterm Submission*
+
+*Rename this file as SectionGroupNoMid.Rmd (e.g., J01Mid.Rmd) before submitting.*
+*Render to HTML and submit both files to the MS Teams inbox.*
